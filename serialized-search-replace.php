@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Serialized Search & Replace
  * Description: Plugin per cercare e sostituire testo in dati serializzati nella tabella postmeta
- * Version: 1.0
+ * Version: 1.1
  * Author: mitoff
  */
 
@@ -18,6 +18,7 @@ class SerializedSearchReplace {
         add_action('admin_enqueue_scripts', array($this, 'enqueue_scripts'));
         add_action('wp_ajax_ssr_search', array($this, 'ajax_search'));
         add_action('wp_ajax_ssr_replace', array($this, 'ajax_replace'));
+        add_action('wp_ajax_ssr_get_meta_keys', array($this, 'ajax_get_meta_keys'));
     }
     
     /**
@@ -41,10 +42,23 @@ class SerializedSearchReplace {
             return;
         }
         
-        wp_enqueue_script('ssr-admin', plugin_dir_url(__FILE__) . 'admin.js', array('jquery'), '1.0', true);
-        wp_enqueue_style('ssr-admin', plugin_dir_url(__FILE__) . 'admin.css', array(), '1.0');
+        $js_file = dirname(__FILE__) . '/mitoff-ssr-admin.js';
+        $css_file = dirname(__FILE__) . '/mitoff-ssr-admin.css';
+        $js_url = plugin_dir_url(__FILE__) . 'mitoff-ssr-admin.js';
+        $css_url = plugin_dir_url(__FILE__) . 'mitoff-ssr-admin.css';
         
-        wp_localize_script('ssr-admin', 'ssr_ajax', array(
+        // Leggi la versione dinamicamente dall'header del plugin
+        $plugin_data = get_file_data(__FILE__, array('Version' => 'Version'));
+        $plugin_version = $plugin_data['Version'] ?: '1.0';
+        
+        // Versioning: versione plugin + incremento basato su data modifica file
+        $js_ver = file_exists($js_file) ? $plugin_version . '.' . date('md', filemtime($js_file)) : $plugin_version . '.0';
+        $css_ver = file_exists($css_file) ? $plugin_version . '.' . date('md', filemtime($css_file)) : $plugin_version . '.0';
+        
+        wp_enqueue_script('mitoff-ssr-admin', $js_url, array('jquery'), $js_ver, true);
+        wp_enqueue_style('mitoff-ssr-admin', $css_url, array(), $css_ver);
+        
+        wp_localize_script('mitoff-ssr-admin', 'ssr_ajax', array(
             'ajax_url' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('ssr_nonce')
         ));
@@ -121,7 +135,8 @@ class SerializedSearchReplace {
                             </th>
                             <td>
                                 <select id="database_table" name="database_table" class="regular-text">
-                                    <?php foreach ($table_options as $table): ?>
+                                    <?php foreach (
+                                        $table_options as $table): ?>
                                         <option value="<?php echo esc_attr($table); ?>" <?php selected($table, $wpdb->postmeta); ?>>
                                             <?php echo esc_html($table); ?>
                                             <?php if ($table === $wpdb->postmeta): ?> (predefinita)<?php endif; ?>
@@ -129,6 +144,14 @@ class SerializedSearchReplace {
                                     <?php endforeach; ?>
                                 </select>
                                 <p class="description">Seleziona la tabella in cui cercare i dati serializzati</p>
+                            </td>
+                        </tr>
+                        <!-- Placeholder per meta_key, verrà popolato da JS se disponibile -->
+                        <tr id="ssr-meta-key-row" style="display:none;">
+                            <th scope="row">Meta Key:</th>
+                            <td>
+                                <span id="ssr-meta-key-loading">Caricamento...</span>
+                                <p class="description">Filtra per meta_key (opzionale, solo se disponibile per la tabella selezionata)</p>
                             </td>
                         </tr>
                         <tr>
@@ -204,10 +227,13 @@ class SerializedSearchReplace {
             wp_die('Accesso negato');
         }
         
-        $search_text = sanitize_text_field($_POST['search_text']);
-        $replace_text = sanitize_text_field($_POST['replace_text']);
         $use_regex = isset($_POST['use_regex']) && $_POST['use_regex'] === '1';
+        // Per entrambe le modalità, evita conversioni HTML entities per preservare < e > nelle regex
+        // Questo è necessario per regex come (?<!<) o (?!>) e per ricerche letterali di < >
+        $search_text = trim(stripslashes($_POST['search_text']));
+        $replace_text = trim(stripslashes($_POST['replace_text']));
         $database_table = sanitize_text_field($_POST['database_table']);
+        $meta_key = isset($_POST['meta_key']) ? sanitize_text_field($_POST['meta_key']) : '';
         
         if (empty($search_text)) {
             wp_send_json_error('Il pattern di ricerca non può essere vuoto');
@@ -228,8 +254,19 @@ class SerializedSearchReplace {
             }
             
             // Query dinamica basata sulla struttura della tabella
-            $sql = $this->build_search_query($database_table, $table_structure, $search_text);
+            $sql = $this->build_search_query($database_table, $table_structure, $search_text, $meta_key, $use_regex);
+            
+            // DEBUG: Prepara info per il frontend
+            $debug_info = array(
+                'original_search_text' => $search_text,
+                'escaped_like_pattern' => $sql, // SQL query è il pattern
+                'sql_query' => $sql
+            );
+            
             $results = $wpdb->get_results($sql);
+            
+            // DEBUG: Aggiungi conteggio risultati SQL
+            $debug_info['sql_results_count'] = count($results);
             
             $matches = array();
             $total_occurrences = 0;
@@ -275,7 +312,8 @@ class SerializedSearchReplace {
                 'replace_text' => $replace_text,
                 'use_regex' => $use_regex,
                 'database_table' => $database_table,
-                'table_structure' => $table_structure
+                'table_structure' => $table_structure,
+                'debug_info' => $debug_info
             ));
             
         } catch (Exception $e) {
@@ -293,10 +331,13 @@ class SerializedSearchReplace {
             wp_die('Accesso negato');
         }
         
-        $search_text = sanitize_text_field($_POST['search_text']);
-        $replace_text = sanitize_text_field($_POST['replace_text']);
         $use_regex = isset($_POST['use_regex']) && $_POST['use_regex'] === '1';
+        // Per entrambe le modalità, evita conversioni HTML entities per preservare < e > nelle regex
+        // Questo è necessario per regex come (?<!<) o (?!>) e per ricerche letterali di < >
+        $search_text = trim(stripslashes($_POST['search_text']));
+        $replace_text = trim(stripslashes($_POST['replace_text']));
         $database_table = sanitize_text_field($_POST['database_table']);
+        $meta_key = isset($_POST['meta_key']) ? sanitize_text_field($_POST['meta_key']) : '';
         
         global $wpdb;
         
@@ -313,7 +354,7 @@ class SerializedSearchReplace {
             }
             
             // Query dinamica basata sulla struttura della tabella
-            $sql = $this->build_search_query($database_table, $table_structure, $search_text);
+            $sql = $this->build_search_query($database_table, $table_structure, $search_text, $meta_key, $use_regex);
             $results = $wpdb->get_results($sql);
             
             $updated_records = 0;
@@ -377,6 +418,32 @@ class SerializedSearchReplace {
         } catch (Exception $e) {
             wp_send_json_error('Errore durante la sostituzione: ' . $e->getMessage());
         }
+    }
+    
+    /**
+     * AJAX: Restituisce i meta_key disponibili per la tabella selezionata
+     */
+    public function ajax_get_meta_keys() {
+        check_ajax_referer('ssr_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_die('Accesso negato');
+        }
+        $database_table = sanitize_text_field($_POST['database_table']);
+        global $wpdb;
+        if (!$this->is_valid_table($database_table)) {
+            wp_send_json_error('Tabella database non valida');
+        }
+        // Cerca se esiste il campo meta_key
+        $columns = $wpdb->get_col($wpdb->prepare(
+            "SELECT COLUMN_NAME FROM information_schema.columns WHERE table_schema = %s AND table_name = %s",
+            DB_NAME,
+            $database_table
+        ));
+        if (!in_array('meta_key', $columns)) {
+            wp_send_json_success(array('meta_keys' => array()));
+        }
+        $meta_keys = $wpdb->get_col("SELECT DISTINCT meta_key FROM `$database_table` ORDER BY meta_key ASC");
+        wp_send_json_success(array('meta_keys' => $meta_keys));
     }
     
     /**
@@ -552,35 +619,78 @@ class SerializedSearchReplace {
     /**
      * Costruisce la query di ricerca dinamica
      */
-    private function build_search_query($table_name, $table_structure, $search_text) {
+    private function build_search_query($table_name, $table_structure, $search_text, $meta_key = '', $use_regex = false) {
         global $wpdb;
-        
         $select_fields = array();
         $select_fields[] = $table_structure['primary_key'];
         $select_fields[] = $table_structure['serialized_field'];
-        
         foreach ($table_structure['display_fields'] as $field) {
             if (!in_array($field, $select_fields)) {
                 $select_fields[] = $field;
             }
         }
-        
         $select_clause = implode(', ', $select_fields);
-        $like_pattern = '%' . $wpdb->esc_like($search_text) . '%';
         
-        $sql = $wpdb->prepare(
-            "SELECT {$select_clause} FROM `{$table_name}` 
-             WHERE `{$table_structure['serialized_field']}` LIKE %s 
-             AND (`{$table_structure['serialized_field']}` LIKE 'a:%' 
-                  OR `{$table_structure['serialized_field']}` LIKE 'O:%' 
-                  OR `{$table_structure['serialized_field']}` LIKE 's:%')",
-            $like_pattern
-        );
+        if ($use_regex) {
+            // Per regex, estrai la parte "core" del pattern per la ricerca SQL
+            $core_pattern = $this->extract_core_pattern($search_text);
+            $search_escaped = str_replace(array("'", '"', "\\"), array("\\'", '\\"', "\\\\"), $core_pattern);
+        } else {
+            // Per ricerca letterale, usa il testo completo
+            $search_escaped = str_replace(array("'", '"', "\\"), array("\\'", '\\"', "\\\\"), $search_text);
+        }
+        
+        $like_pattern = '%' . $search_escaped . '%';
+        
+        $sql = "SELECT {$select_clause} FROM `{$table_name}` ";
+        $sql .= "WHERE `{$table_structure['serialized_field']}` LIKE '{$like_pattern}' ";
+        $sql .= "AND (`{$table_structure['serialized_field']}` LIKE 'a:%' ";
+        $sql .= "OR `{$table_structure['serialized_field']}` LIKE 'O:%' ";
+        $sql .= "OR `{$table_structure['serialized_field']}` LIKE 's:%') ";
+        
+        if (!empty($meta_key) && in_array('meta_key', $table_structure['display_fields'])) {
+            $meta_key_escaped = str_replace(array("'", '"', "\\"), array("\\'", '\\"', "\\\\"), $meta_key);
+            $sql .= "AND `meta_key` = '{$meta_key_escaped}' ";
+        }
         
         return $sql;
     }
+    
+    /**
+     * Estrae la parte "core" di un pattern regex per la ricerca SQL
+     */
+    private function extract_core_pattern($regex_pattern) {
+        // Rimuovi lookahead e lookbehind
+        $core = preg_replace('/\(\?\<[!=].*?\)/', '', $regex_pattern);
+        $core = preg_replace('/\(\?\![^)]*\)/', '', $core);
+        $core = preg_replace('/\(\?\=[^)]*\)/', '', $core);
+        
+        // Rimuovi quantificatori
+        $core = preg_replace('/[+*?{][^}]*}?/', '', $core);
+        
+        // Rimuovi caratteri speciali regex comuni
+        $core = str_replace(array('^', '$', '\\b', '\\s', '\\d', '\\w'), '', $core);
+        
+        // Rimuovi parentesi di gruppi
+        $core = preg_replace('/[()]/', '', $core);
+        
+        // Se rimane qualcosa di utile, usalo, altrimenti usa una stringa generica
+        $core = trim($core);
+        if (empty($core) || strlen($core) < 2) {
+            // Se il pattern è troppo complesso, cerca almeno alcuni caratteri comuni
+            if (strpos($regex_pattern, 'strong') !== false) {
+                return 'strong';
+            } elseif (strpos($regex_pattern, 'br') !== false) {
+                return 'br';
+            } else {
+                return ''; // Cerca tutto se non riesci a estrarre un pattern utile
+            }
+        }
+        
+        return $core;
+    }
 }
+
 
 // Inizializza il plugin
 new SerializedSearchReplace();
-?> 

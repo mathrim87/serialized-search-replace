@@ -40,6 +40,46 @@ jQuery(document).ready(function($) {
         }, 500);
     });
     
+    // Caricamento meta_key dinamico
+    $('#database_table').on('change', function() {
+        const table = $(this).val();
+        $('#ssr-meta-key-row').remove();
+        if (!table) return;
+        // Mostra loading per meta_key
+        const loadingRow = `<tr id="ssr-meta-key-row"><th scope="row">Meta Key:</th><td><span id="ssr-meta-key-loading">Caricamento...</span></td></tr>`;
+        // Inserisci DOPO la riga della tabella database, non alla fine
+        $('#database_table').closest('tr').after(loadingRow);
+        $.ajax({
+            url: ssr_ajax.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'ssr_get_meta_keys',
+                database_table: table,
+                nonce: ssr_ajax.nonce
+            },
+            success: function(response) {
+                if (response.success && response.data.meta_keys && response.data.meta_keys.length > 0) {
+                    let select = `<select id="meta_key" name="meta_key" class="regular-text"><option value="">-- Tutti --</option>`;
+                    response.data.meta_keys.forEach(function(key) {
+                        select += `<option value="${escapeHtml(key)}">${escapeHtml(key)}</option>`;
+                    });
+                    select += '</select>';
+                    $('#ssr-meta-key-row td').html(select + '<p class="description">Filtra per meta_key (opzionale)</p>');
+                } else {
+                    $('#ssr-meta-key-row').remove();
+                }
+            },
+            error: function() {
+                $('#ssr-meta-key-row').remove();
+            }
+        });
+    });
+
+    // Trigger iniziale se già selezionato
+    if ($('#database_table').val()) {
+        $('#database_table').trigger('change');
+    }
+    
     /**
      * Esegue la ricerca
      */
@@ -48,6 +88,7 @@ jQuery(document).ready(function($) {
         const replaceText = $('#replace_text').val().trim();
         const useRegex = $('#use_regex').is(':checked');
         const databaseTable = $('#database_table').val();
+        const metaKey = $('#meta_key').length ? $('#meta_key').val() : '';
         
         if (!searchText) {
             alert('Il pattern di ricerca è obbligatorio!');
@@ -68,6 +109,7 @@ jQuery(document).ready(function($) {
                 replace_text: replaceText,
                 use_regex: useRegex ? '1' : '0',
                 database_table: databaseTable,
+                meta_key: metaKey,
                 nonce: ssr_ajax.nonce
             },
             success: function(response) {
@@ -114,6 +156,7 @@ jQuery(document).ready(function($) {
                 replace_text: searchResults.replace_text,
                 use_regex: searchResults.use_regex ? '1' : '0',
                 database_table: searchResults.database_table,
+                meta_key: $('#meta_key').length ? $('#meta_key').val() : '',
                 nonce: ssr_ajax.nonce
             },
             success: function(response) {
@@ -143,16 +186,31 @@ jQuery(document).ready(function($) {
         const $summary = $('#search-summary');
         const $details = $('#search-details');
         
+        // Per ricerca e sostituzione, non fare escape se non è regex
+        const searchTextDisplay = data.use_regex ? escapeHtml(data.search_text) : data.search_text;
+        const replaceTextDisplay = data.use_regex ? escapeHtml(data.replace_text) : data.replace_text;
+        
         // Summary
         $summary.html(`
             <div class="ssr-summary-box">
                 <h3>📊 Riepilogo ricerca</h3>
                 <p><strong>Tabella database:</strong> <code>${escapeHtml(data.database_table)}</code></p>
-                <p><strong>Pattern cercato:</strong> <code>${escapeHtml(data.search_text)}</code></p>
-                <p><strong>Sostituirà con:</strong> <code>${escapeHtml(data.replace_text)}</code></p>
+                <p><strong>Pattern cercato:</strong> <code>${searchTextDisplay}</code></p>
+                <p><strong>Sostituirà con:</strong> <code>${replaceTextDisplay}</code></p>
                 <p><strong>Modalità regex:</strong> ${data.use_regex ? 'Sì' : 'No'}</p>
                 <p><strong>Record trovati:</strong> ${data.total_records}</p>
                 <p><strong>Occorrenze totali:</strong> ${data.total_occurrences}</p>
+                ${data.debug_info ? `
+                <hr style="margin: 15px 0;">
+                <h4>🔍 Debug Info</h4>
+                <p><strong>Testo originale:</strong> <code>${data.debug_info.original_search_text}</code></p>
+                <p><strong>Pattern SQL LIKE:</strong> <code>${data.debug_info.escaped_like_pattern}</code></p>
+                <p><strong>Risultati query SQL:</strong> ${data.debug_info.sql_results_count}</p>
+                <details>
+                    <summary>Query SQL completa</summary>
+                    <pre style="background: #f0f0f0; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 12px;">${escapeHtml(data.debug_info.sql_query)}</pre>
+                </details>
+                ` : ''}
             </div>
         `);
         
