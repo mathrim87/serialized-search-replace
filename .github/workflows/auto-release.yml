@@ -16,5 +16,6 @@ jobs:
     with:
       plugin_main_file: serialized-search-replace.php
       plugin_slug: serialized-search-replace
+    secrets: inherit
 
 
