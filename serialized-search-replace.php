@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Serialized Search & Replace
  * Description: Plugin per cercare e sostituire testo in dati serializzati nella tabella postmeta
- * Version: 1.1.4
+ * Version: 1.1.5
  * Author: mitoff
  * Text Domain: serialized-search-replace
  * Domain Path: /languages
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('SSR_VERSION', '1.1.4');
+define('SSR_VERSION', '1.1.5');
 define('SSR_PLUGIN_FILE', __FILE__);
 define('SSR_PLUGIN_DIR', plugin_dir_path(__FILE__));
 
