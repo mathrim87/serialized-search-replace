@@ -29,6 +29,13 @@ if (!class_exists('Salus_Admin_Menu')) {
     class Salus_Admin_Menu {
 
         /**
+         * Flag per evitare di registrare l'hook di ordinamento più volte.
+         *
+         * @var bool
+         */
+        private static $sort_hook_added = false;
+
+        /**
          * Registra un sottomenu sotto il menu Salus.
          *
          * @param string   $page_title   Titolo della pagina (tag title).
@@ -41,6 +48,11 @@ if (!class_exists('Salus_Admin_Menu')) {
          */
         public static function register_submenu($page_title, $menu_title, $capability, $menu_slug, $callback, $text_domain = 'salus') {
             $salus_menu_slug = 'salus';
+
+            if (!self::$sort_hook_added) {
+                add_action('admin_menu', array(__CLASS__, 'sort_submenu'), 999);
+                self::$sort_hook_added = true;
+            }
 
             if (self::menu_exists($salus_menu_slug)) {
                 add_submenu_page(
@@ -97,6 +109,21 @@ if (!class_exists('Salus_Admin_Menu')) {
             }
 
             return false;
+        }
+
+        /**
+         * Ordina le voci del menu Salus alfabeticamente.
+         * Eseguito con priorità 999, dopo che tutti i plugin hanno registrato i sottomenu.
+         *
+         * @return void
+         */
+        public static function sort_submenu() {
+            global $submenu;
+            if (isset($submenu['salus']) && is_array($submenu['salus'])) {
+                usort($submenu['salus'], function ($a, $b) {
+                    return strcasecmp($a[0], $b[0]);
+                });
+            }
         }
     }
 }

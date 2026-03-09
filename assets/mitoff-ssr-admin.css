@@ -1,5 +1,15 @@
 /* Serialized Search & Replace Admin Styles */
 
+.ssr-version {
+    font-size: 0.6em;
+    font-weight: normal;
+    color: #646970;
+    background: #f0f0f1;
+    padding: 2px 8px;
+    border-radius: 4px;
+    vertical-align: middle;
+}
+
 .ssr-container {
     max-width: 1200px;
     margin: 20px 0;
