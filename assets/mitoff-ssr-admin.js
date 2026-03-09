@@ -386,4 +386,4 @@ jQuery(document).ready(function($) {
         return text.replace(/[&<>"']/g, function(m) { return map[m]; });
     }
     
-}); 
+});

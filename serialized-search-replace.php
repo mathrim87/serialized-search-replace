@@ -2,8 +2,10 @@
 /**
  * Plugin Name: Serialized Search & Replace
  * Description: Plugin per cercare e sostituire testo in dati serializzati nella tabella postmeta
- * Version: 1.1
+ * Version: 1.1.1
  * Author: mitoff
+ * Text Domain: serialized-search-replace
+ * Domain Path: /languages
  */
 
 // Impedisce l'accesso diretto
@@ -11,10 +13,14 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+define('SSR_VERSION', '1.1.1');
+
+require_once dirname(__FILE__) . '/includes/salus-admin-menu.php';
+
 class SerializedSearchReplace {
     
     public function __construct() {
-        add_action('admin_menu', array($this, 'add_admin_menu'));
+        add_action('admin_menu', array($this, 'add_admin_menu'), 99);
         add_action('admin_enqueue_scripts', array($this, 'enqueue_scripts'));
         add_action('wp_ajax_ssr_search', array($this, 'ajax_search'));
         add_action('wp_ajax_ssr_replace', array($this, 'ajax_replace'));
@@ -25,12 +31,13 @@ class SerializedSearchReplace {
      * Aggiunge la voce di menu nell'admin
      */
     public function add_admin_menu() {
-        add_management_page(
+        salus_register_submenu(
             'Serialized Search & Replace',
             'Search & Replace',
             'manage_options',
             'serialized-search-replace',
-            array($this, 'admin_page')
+            array($this, 'admin_page'),
+            'serialized-search-replace'
         );
     }
     
@@ -38,25 +45,15 @@ class SerializedSearchReplace {
      * Carica CSS e JavaScript
      */
     public function enqueue_scripts($hook) {
-        if ($hook !== 'tools_page_serialized-search-replace') {
+        if ($hook !== 'salus_page_serialized-search-replace') {
             return;
         }
         
-        $js_file = dirname(__FILE__) . '/mitoff-ssr-admin.js';
-        $css_file = dirname(__FILE__) . '/mitoff-ssr-admin.css';
-        $js_url = plugin_dir_url(__FILE__) . 'mitoff-ssr-admin.js';
-        $css_url = plugin_dir_url(__FILE__) . 'mitoff-ssr-admin.css';
+        $js_url = plugin_dir_url(__FILE__) . 'assets/mitoff-ssr-admin.js';
+        $css_url = plugin_dir_url(__FILE__) . 'assets/mitoff-ssr-admin.css';
         
-        // Leggi la versione dinamicamente dall'header del plugin
-        $plugin_data = get_file_data(__FILE__, array('Version' => 'Version'));
-        $plugin_version = $plugin_data['Version'] ?: '1.0';
-        
-        // Versioning: versione plugin + incremento basato su data modifica file
-        $js_ver = file_exists($js_file) ? $plugin_version . '.' . date('md', filemtime($js_file)) : $plugin_version . '.0';
-        $css_ver = file_exists($css_file) ? $plugin_version . '.' . date('md', filemtime($css_file)) : $plugin_version . '.0';
-        
-        wp_enqueue_script('mitoff-ssr-admin', $js_url, array('jquery'), $js_ver, true);
-        wp_enqueue_style('mitoff-ssr-admin', $css_url, array(), $css_ver);
+        wp_enqueue_script('mitoff-ssr-admin', $js_url, array('jquery'), SSR_VERSION, true);
+        wp_enqueue_style('mitoff-ssr-admin', $css_url, array(), SSR_VERSION);
         
         wp_localize_script('mitoff-ssr-admin', 'ssr_ajax', array(
             'ajax_url' => admin_url('admin-ajax.php'),
