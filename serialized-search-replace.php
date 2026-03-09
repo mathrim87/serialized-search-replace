@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Serialized Search & Replace
  * Description: Plugin per cercare e sostituire testo in dati serializzati nella tabella postmeta
- * Version: 1.1.1
+ * Version: 1.1.2
  * Author: mitoff
  * Text Domain: serialized-search-replace
  * Domain Path: /languages
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('SSR_VERSION', '1.1.1');
+define('SSR_VERSION', '1.1.2');
 
 require_once dirname(__FILE__) . '/includes/salus-admin-menu.php';
 
@@ -31,7 +31,7 @@ class SerializedSearchReplace {
      * Aggiunge la voce di menu nell'admin
      */
     public function add_admin_menu() {
-        salus_register_submenu(
+        Salus_Admin_Menu::register_submenu(
             'Serialized Search & Replace',
             'Search & Replace',
             'manage_options',
