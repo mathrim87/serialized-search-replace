@@ -5,6 +5,12 @@ Tutte le modifiche significative a questo progetto saranno documentate in questo
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/),
 e questo progetto aderisce al [Semantic Versioning](https://semver.org/lang/it/).
 
+## [1.1.6] - 2026-05-22
+
+### Modificato
+- versione plugin nell'intestazione admin allineata allo standard Salus (`salus-plugin-version` con stile inline)
+- rimossi stili CSS obsoleti della classe `.ssr-version`
+
 ## [1.1.3] - 2025-03-09
 
 ### Aggiunto

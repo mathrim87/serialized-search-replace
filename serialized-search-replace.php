@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Serialized Search & Replace
  * Description: Plugin per cercare e sostituire testo in dati serializzati nella tabella postmeta
- * Version: 1.1.5
+ * Version: 1.1.6
  * Author: mitoff
  * Text Domain: serialized-search-replace
  * Domain Path: /languages
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('SSR_VERSION', '1.1.5');
+define('SSR_VERSION', '1.1.6');
 define('SSR_PLUGIN_FILE', __FILE__);
 define('SSR_PLUGIN_DIR', plugin_dir_path(__FILE__));
 
@@ -86,7 +86,12 @@ class SerializedSearchReplace {
         }
         ?>
         <div class="wrap">
-            <h1>🔍 Serialized Search & Replace <span class="ssr-version" style="font-size: 0.8em; color: #646970; font-weight: normal;"> - v<?php echo esc_html( SSR_VERSION ); ?></span></h1>
+            <h1>
+                🔍 Serialized Search & Replace
+                <span class="salus-plugin-version" style="font-size: 0.8em; color: #646970; font-weight: normal;">
+                    - v<?php echo esc_html( SSR_VERSION ); ?>
+                </span>
+            </h1>
             <div class="ssr-container">
                 <div class="ssr-warning">
                     <p><strong>⚠️ ATTENZIONE:</strong> Fai sempre un backup del database prima di procedere con le sostituzioni!</p>
