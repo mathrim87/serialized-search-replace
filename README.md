@@ -1,180 +1,126 @@
-# Serialized Search & Replace Plugin
+# Serialized Search & Replace
 
-Plugin WordPress avanzato per cercare e sostituire testo in dati serializzati su diverse tabelle del database in modo sicuro.
+Plugin WordPress per cercare e sostituire testo all'interno di dati **serializzati** in tabelle `*meta` e `*options`, con anteprima prima della scrittura.
 
-## 🚀 Caratteristiche
+**Versione attuale:** 1.1.7
 
-- ✅ **Ricerca sicura** in dati serializzati
-- ✅ **Supporto multi-tabella** (postmeta, usermeta, termmeta, options, ecc.)
-- ✅ **Esempi pratici integrati** con pattern regex comuni
-- ✅ **Anteprima dettagliata** prima della sostituzione
-- ✅ **Supporto espressioni regolari** avanzate (PCRE)
-- ✅ **Report dinamico** delle modifiche per tabella
-- ✅ **Interfaccia moderna** e user-friendly
-- ✅ **Gestione sicura** dei dati (nonce, sanitizzazione, validazione)
-- ✅ **Rilevamento automatico** struttura tabelle
+## Caratteristiche
 
-## 📁 Struttura Plugin
+- Ricerca e sostituzione su dati serializzati (array PHP in `postmeta`, `usermeta`, `termmeta`, `options`, ecc.)
+- Supporto multi-tabella con rilevamento automatico della struttura
+- Filtro opzionale per `meta_key`
+- Esempi regex integrati nell'interfaccia admin
+- Anteprima dei record trovati prima di applicare le modifiche
+- Modalità regex PCRE o ricerca letterale
+- Report delle sostituzioni effettuate
+- Aggiornamenti da GitHub Release (Plugin Update Checker)
+
+## Requisiti
+
+- WordPress 5.0+
+- PHP 7.4+ (consigliato 8.x)
+- Permessi `manage_options` (solo amministratori)
+
+## Struttura del plugin
 
 ```
 serialized-search-replace/
-├── serialized-search-replace.php  # File principale del plugin
-├── admin.js                       # JavaScript per l'interfaccia
-├── admin.css                      # Stili CSS
-└── README.md                      # Questo file
+├── serialized-search-replace.php   # Bootstrap e logica principale
+├── assets/
+│   ├── mitoff-ssr-admin.js         # Interfaccia admin (AJAX)
+│   └── mitoff-ssr-admin.css        # Stili admin
+├── salus/
+│   ├── salus-admin-menu.php        # Menu condiviso Salus
+│   ├── class-ssr-update-checker.php
+│   ├── salus-puc-manual-check.php
+│   └── plugin-update-checker/      # Libreria PUC (aggiornamenti GitHub)
+├── CHANGELOG.md
+└── README.md
 ```
 
-## 🛠️ Installazione
+## Installazione
 
-### Metodo 1: Copia dei file
+### Da Release GitHub (consigliato)
 
-1. Crea una cartella chiamata `serialized-search-replace` in `/wp-content/plugins/`
-2. Copia tutti i file del plugin nella cartella:
-   - `serialized-search-replace.php`
-   - `admin.js`
-   - `admin.css`
-3. Vai in **WordPress Admin > Plugin > Plugin installati**
-4. Attiva il plugin "**Serialized Search & Replace**"
+1. Scarica lo ZIP dalla [Release](https://github.com/mathrim87/serialized-search-replace/releases) più recente
+2. In **Plugin → Aggiungi nuovo → Carica plugin**, installa e attiva
+3. Gli aggiornamenti successivi compaiono in **Plugin** se il sito può raggiungere GitHub
 
-### Metodo 2: ZIP Upload
+### Copia manuale
 
-1. Crea un file ZIP con tutti i file del plugin
-2. Vai in **WordPress Admin > Plugin > Aggiungi nuovo**
-3. Clicca "**Carica plugin**" e seleziona il file ZIP
-4. Installa e attiva il plugin
+1. Copia la cartella `serialized-search-replace` in `wp-content/plugins/`
+2. Attiva il plugin da **Plugin → Plugin installati**
 
-## 📖 Come usare
+## Utilizzo
 
-1. Vai in **WordPress Admin > Strumenti > Search & Replace**
-2. **Scegli un esempio** dalla sezione "Esempi di utilizzo" (opzionale)
-3. **Seleziona la tabella** database dal dropdown (default: `postmeta`)
-4. Inserisci il **pattern di ricerca** (testo o regex)
-5. Inserisci il **testo sostitutivo** (può essere vuoto per rimuovere)
-6. **Abilita/disabilita** la modalità regex (default: abilitata)
-7. Clicca **"🔍 Cerca"** per vedere l'anteprima
-8. **Verifica attentamente** i risultati nella tabella dinamica
-9. Se i risultati sono corretti, clicca **"🔄 Procedi con la sostituzione"**
-10. **Controlla il report finale** delle modifiche effettuate
+1. Vai in **Salus → Search & Replace** (il menu **Salus** viene creato automaticamente se assente)
+2. Scegli un esempio dalla sezione integrata (opzionale)
+3. Seleziona la **tabella** database (default: `postmeta`)
+4. Filtra per **meta_key** se la tabella lo supporta (consigliato con pattern regex complessi)
+5. Inserisci il **pattern di ricerca** (testo o regex, senza delimitatori `/`)
+6. Inserisci il **testo sostitutivo** (può essere vuoto)
+7. Clicca **Cerca** e verifica l'anteprima
+8. Conferma con **Procedi con la sostituzione** solo dopo aver controllato i risultati
 
-## 🔍 Esempi integrati nel plugin
+## Esempi di pattern
 
-### 🔧 Riparare tag BR malformati
-- **Pattern:** `(?<!<)br /(?!>)`
-- **Sostituisci:** `<br />`
-- **Descrizione:** Trova "br /" che non è già formattato come `<br />`
+| Caso | Cerca | Sostituisci |
+|------|-------|-------------|
+| Tag `<br />` malformati | `(?<!<)br /(?!>)` | `<br />` |
+| HTTP → HTTPS | `http://(?!.*https://)` | `https://` |
+| Sostituzione dominio | `vecchio-dominio.com` | `nuovo-dominio.com` |
+| Rimuovere `style` inline | `style="[^"]*"` | _(vuoto)_ |
 
-### 🔗 Aggiornare URL HTTP a HTTPS  
-- **Pattern:** `http://(?!.*https://)`
-- **Sostituisci:** `https://`
-- **Descrizione:** Converte URL HTTP in HTTPS evitando duplicazioni
+## Sicurezza
 
-### 📝 Sostituire testo semplice
-- **Pattern:** `vecchio-dominio.com`
-- **Sostituisci:** `nuovo-dominio.com`
-- **Descrizione:** Sostituzione diretta senza regex
+Il plugin è pensato solo per admin con `manage_options`:
 
-### 🎨 Rimuovere attributi style inline
-- **Pattern:** `style="[^"]*"`
-- **Sostituisci:** _(vuoto)_
-- **Descrizione:** Rimuove tutti gli attributi style inline
+- Nonce CSRF su tutte le richieste AJAX
+- Whitelist tabelle (`*meta`, `*options`) con verifica su `information_schema`
+- Query SQL con `$wpdb->prepare()` e `$wpdb->esc_like()`
+- Deserializzazione con `allowed_classes => false` (nessuna istanziazione di oggetti PHP)
+- Validazione sintassi regex e limiti PCRE (`backtrack_limit`, `recursion_limit`)
+- Blocco scan SQL troppo ampia: pattern regex generici richiedono una `meta_key` o un filtro LIKE utilizzabile
+- Elaborazione batch lato server (200 righe per richiesta AJAX) per limitare il carico su tabelle grandi
 
-## ⚠️ Avvertenze importanti
+> **Nota:** è uno strumento di manutenzione database. Un admin compromesso o un uso improprio possono danneggiare i dati del sito. Backup obbligatorio.
 
-1. **BACKUP OBBLIGATORIO**: Fai sempre un backup completo del database prima di usare il plugin!
-2. **Test su staging**: Testa prima su un ambiente di sviluppo
-3. **Dati serializzati**: Il plugin funziona su dati serializzati in tabelle `*meta` e `*options`
-4. **Amministratori**: Solo gli utenti con permessi `manage_options` possono usare il plugin
-5. **Validazione tabelle**: Il plugin accetta solo tabelle sicure (meta/options pattern)
+## Limitazioni note
 
-## 🔧 Funzionalità tecniche
+- Opera solo su valori **serializzati** (prefissi `a:`, `s:`, `O:` nel campo); stringhe plain non serializzate non vengono processate
+- I dati oggetto (`O:...`) vengono ignorati in lettura per sicurezza
+- Con pattern regex molto astratti, seleziona una `meta_key` per restringere la scansione SQL
+- La paginazione batch è attiva lato server; l'interfaccia JS elabora ancora una richiesta per operazione (estensione multi-batch in roadmap)
 
-### Sicurezza Avanzata
-- ✅ Verifica dei permessi utente (`manage_options`)
-- ✅ Nonce per prevenire CSRF
-- ✅ Sanitizzazione rigorosa degli input
-- ✅ Prepared statements per le query
-- ✅ Validazione whitelist delle tabelle
-- ✅ Controllo esistenza tabelle via `information_schema`
+## Risoluzione problemi
 
-### Gestione Multi-Tabella
-- ✅ Rilevamento automatico struttura tabelle
-- ✅ Supporto pattern per tabelle `*meta` e `*options`
-- ✅ Mappatura dinamica campi (primary key, serialized field, display fields)
-- ✅ Query builder dinamico per diverse strutture
-- ✅ Fallback intelligente per tabelle sconosciute
+**Il plugin non compare nel menu**  
+Verifica permessi amministratore, plugin attivo e assenza di errori PHP nei log.
 
-### Gestione Dati Serializzati
-- ✅ Deserializzazione sicura dei dati
-- ✅ Processamento ricorsivo di array multidimensionali
-- ✅ Riserializzazione corretta (mantiene l'integrità dei dati)
-- ✅ Conteggio accurato delle occorrenze
-- ✅ Supporto regex PCRE avanzate
+**Nessun risultato con regex complessa**  
+Prova a selezionare una `meta_key` specifica o semplifica il pattern.
 
-### Interfaccia Utente Moderna
-- ✅ Grid responsive per esempi
-- ✅ Tabelle dinamiche con header adattivi
-- ✅ Feedback in tempo reale
-- ✅ Loading indicators con animazioni
-- ✅ Conferme di sicurezza
-- ✅ Report dettagliati dinamici
-- ✅ Auto-popolazione campi da esempi
-- ✅ Scroll automatico alle sezioni
+**Errore «Pattern regex troppo generico»**  
+Il filtro SQL non può restringere la ricerca: aggiungi una `meta_key` o usa un pattern con testo letterale riconoscibile.
 
-## 🐛 Risoluzione problemi
+**Regex non applicata**  
+Controlla che «Usa espressione regolare» sia attivo e che il pattern **non** includa i delimitatori `/`.
 
-### Il plugin non appare nel menu
-- Verifica che l'utente abbia permessi di amministratore
-- Controlla che il plugin sia attivato
-- Verifica la presenza di errori PHP nei log
+## Changelog
 
-### Errori durante la ricerca
-- Controlla la connessione al database
-- Verifica che la tabella `postmeta` esista
-- Controlla i log di errore di WordPress
+Vedi [CHANGELOG.md](CHANGELOG.md).
 
-### Regex non funziona
-- Verifica che la checkbox "Usa espressione regolare" sia selezionata
-- Testa il pattern regex in un tool online prima
-- Ricorda di NON includere i delimitatori `/` nel pattern
+## Casi d'uso
 
-## 📝 Changelog
+- Migrazione dominio o passaggio HTTP → HTTPS in meta serializzate
+- Correzione HTML malformato in campi builder / ACF / WooCommerce
+- Pulizia attributi inline o testo duplicato in opzioni serializzate
 
-### Versione 2.0 (Attuale)
-- ✨ **Supporto multi-tabella** (postmeta, usermeta, termmeta, options)
-- ✨ **Esempi pratici integrati** con pulsanti "Usa questo esempio"
-- ✨ **Rilevamento automatico** struttura tabelle
-- ✨ **Interface dinamica** con tabelle responsive
-- ✨ **Sicurezza migliorata** con validazione whitelist
-- ✨ **Regex abilitato di default** per facilità d'uso
+## Licenza e supporto
 
-### Versione 1.0
-- Prima release
-- Ricerca e sostituzione in dati serializzati
-- Supporto espressioni regolari
-- Interfaccia admin base
-- Report dettagliati
-
-## 🎯 Casi d'uso comuni
-
-### E-commerce (WooCommerce)
-- Aggiornare URL immagini prodotti
-- Correggere testi di prodotto malformattati
-- Migrare da HTTP a HTTPS
-
-### Migrazione siti
-- Cambiare domini nei link interni
-- Aggiornare percorsi file/media
-- Correggere URL di sviluppo in produzione
-
-### Pulizia codice
-- Rimuovere CSS inline
-- Correggere tag HTML malformati
-- Standardizzare formattazione
-
-## 🤝 Supporto
-
-Per problemi o domande, contatta lo sviluppatore del plugin.
+Codice distribuito via GitHub ([mathrim87/serialized-search-replace](https://github.com/mathrim87/serialized-search-replace)).  
+Per segnalazioni e richieste, apri una issue sul repository.
 
 ---
 
-**⚠️ RICORDA: Fai sempre un backup del database prima di usare questo plugin!** 
+**Fai sempre un backup completo del database prima di eseguire sostituzioni.**

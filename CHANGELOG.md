@@ -5,6 +5,18 @@ Tutte le modifiche significative a questo progetto saranno documentate in questo
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/),
 e questo progetto aderisce al [Semantic Versioning](https://semver.org/lang/it/).
 
+## [1.1.7] - 2026-09-01
+
+### Corretto
+- **Deserializzazione sicura**: `unserialize()` con `allowed_classes => false` per evitare POP/object injection su dati serializzati
+- **Scansione SQL**: paginazione batch (200 righe per richiesta) su ricerca e sostituzione AJAX per ridurre rischio DoS su tabelle meta/options grandi
+- **Pattern regex generici**: blocco della scansione SQL quando il pattern regex non produce un filtro LIKE utilizzabile e non è selezionata una `meta_key`
+- **ReDoS**: validazione sintassi regex prima dell’uso e limiti `pcre.backtrack_limit` / `pcre.recursion_limit` su `preg_match_all` e `preg_replace`
+
+### Migliorato
+- **Query SQL**: clausole LIKE e filtri costruiti con `$wpdb->prepare()` e `$wpdb->esc_like()`
+- **Parametri AJAX**: normalizzazione centralizzata (`parse_request_params`) con `offset` e `batch_size`
+
 ## [1.1.6] - 2026-05-22
 
 ### Modificato

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Serialized Search & Replace
  * Description: Plugin per cercare e sostituire testo in dati serializzati nella tabella postmeta
- * Version: 1.1.6
+ * Version: 1.1.7
  * Author: mitoff
  * Text Domain: serialized-search-replace
  * Domain Path: /languages
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('SSR_VERSION', '1.1.6');
+define('SSR_VERSION', '1.1.7');
 define('SSR_PLUGIN_FILE', __FILE__);
 define('SSR_PLUGIN_DIR', plugin_dir_path(__FILE__));
 
@@ -25,6 +25,9 @@ if ( is_admin() ) {
 }
 
 class SerializedSearchReplace {
+
+    const BATCH_SIZE = 200;
+    const PCRE_BACKTRACK_LIMIT = 100000;
     
     public function __construct() {
         add_action('admin_menu', array($this, 'add_admin_menu'), 99);
@@ -231,199 +234,233 @@ class SerializedSearchReplace {
      */
     public function ajax_search() {
         check_ajax_referer('ssr_nonce', 'nonce');
-        
+
         if (!current_user_can('manage_options')) {
             wp_die('Accesso negato');
         }
-        
-        $use_regex = isset($_POST['use_regex']) && $_POST['use_regex'] === '1';
-        // Per entrambe le modalità, evita conversioni HTML entities per preservare < e > nelle regex
-        // Questo è necessario per regex come (?<!<) o (?!>) e per ricerche letterali di < >
-        $search_text = trim(stripslashes($_POST['search_text']));
-        $replace_text = trim(stripslashes($_POST['replace_text']));
-        $database_table = sanitize_text_field($_POST['database_table']);
-        $meta_key = isset($_POST['meta_key']) ? sanitize_text_field($_POST['meta_key']) : '';
-        
-        if (empty($search_text)) {
+
+        $params = $this->parse_request_params();
+
+        if (empty($params['search_text'])) {
             wp_send_json_error('Il pattern di ricerca non può essere vuoto');
         }
-        
+
         global $wpdb;
-        
-        // Validazione tabella
-        if (!$this->is_valid_table($database_table)) {
+
+        if (!$this->is_valid_table($params['database_table'])) {
             wp_send_json_error('Tabella database non valida');
         }
-        
+
+        if ($params['use_regex']) {
+            $regex_check = $this->validate_regex_pattern($params['search_text']);
+            if (is_wp_error($regex_check)) {
+                wp_send_json_error($regex_check->get_error_message());
+            }
+        }
+
         try {
-            // Determina la struttura della tabella
-            $table_structure = $this->get_table_structure($database_table);
+            $table_structure = $this->get_table_structure($params['database_table']);
             if (!$table_structure) {
                 wp_send_json_error('Impossibile determinare la struttura della tabella');
             }
-            
-            // Query dinamica basata sulla struttura della tabella
-            $sql = $this->build_search_query($database_table, $table_structure, $search_text, $meta_key, $use_regex);
-            
-            // DEBUG: Prepara info per il frontend
-            $debug_info = array(
-                'original_search_text' => $search_text,
-                'escaped_like_pattern' => $sql, // SQL query è il pattern
-                'sql_query' => $sql
+
+            $sql = $this->build_search_query(
+                $params['database_table'],
+                $table_structure,
+                $params['search_text'],
+                $params['meta_key'],
+                $params['use_regex'],
+                $params['batch_size'],
+                $params['offset']
             );
-            
+
+            if (is_wp_error($sql)) {
+                wp_send_json_error($sql->get_error_message());
+            }
+
+            $debug_info = array(
+                'original_search_text' => $params['search_text'],
+                'sql_query'            => $sql,
+            );
+
             $results = $wpdb->get_results($sql);
-            
-            // DEBUG: Aggiungi conteggio risultati SQL
             $debug_info['sql_results_count'] = count($results);
-            
-            $matches = array();
-            $total_occurrences = 0;
-            
+
+            $matches           = array();
+            $batch_occurrences = 0;
+
             foreach ($results as $row) {
-                $serialized_field = $table_structure['serialized_field'];
-                $unserialized_data = @unserialize($row->{$serialized_field});
-                
+                $serialized_field  = $table_structure['serialized_field'];
+                $unserialized_data = $this->safe_unserialize($row->{$serialized_field});
+
                 if ($unserialized_data === false) {
                     continue;
                 }
-                
-                $occurrences = $this->count_occurrences_in_data($unserialized_data, $search_text, $use_regex);
-                
+
+                $occurrences = $this->count_occurrences_in_data(
+                    $unserialized_data,
+                    $params['search_text'],
+                    $params['use_regex']
+                );
+
                 if ($occurrences > 0) {
                     $match_data = array(
-                        'primary_id' => $row->{$table_structure['primary_key']},
+                        'primary_id'  => $row->{$table_structure['primary_key']},
                         'occurrences' => $occurrences,
                     );
-                    
-                    // Aggiungi campi specifici della tabella
+
                     foreach ($table_structure['display_fields'] as $field) {
                         if (isset($row->{$field})) {
                             $match_data[$field] = $row->{$field};
                         }
                     }
-                    
-                    // Aggiungi titolo post se disponibile
+
                     if (isset($row->post_id)) {
                         $match_data['post_title'] = get_the_title($row->post_id);
                     }
-                    
+
                     $matches[] = $match_data;
-                    $total_occurrences += $occurrences;
+                    $batch_occurrences += $occurrences;
                 }
             }
-            
+
+            $batch_size = $params['batch_size'];
+            $has_more   = count($results) === $batch_size;
+
             wp_send_json_success(array(
-                'matches' => $matches,
-                'total_records' => count($matches),
-                'total_occurrences' => $total_occurrences,
-                'search_text' => $search_text,
-                'replace_text' => $replace_text,
-                'use_regex' => $use_regex,
-                'database_table' => $database_table,
-                'table_structure' => $table_structure,
-                'debug_info' => $debug_info
+                'matches'           => $matches,
+                'batch_matches'     => count($matches),
+                'batch_occurrences' => $batch_occurrences,
+                'has_more'          => $has_more,
+                'next_offset'       => $params['offset'] + $batch_size,
+                'search_text'       => $params['search_text'],
+                'replace_text'      => $params['replace_text'],
+                'use_regex'         => $params['use_regex'],
+                'database_table'    => $params['database_table'],
+                'table_structure'   => $table_structure,
+                'debug_info'        => $debug_info,
             ));
-            
+
         } catch (Exception $e) {
             wp_send_json_error('Errore durante la ricerca: ' . $e->getMessage());
         }
     }
-    
+
     /**
      * AJAX: Sostituzione
      */
     public function ajax_replace() {
         check_ajax_referer('ssr_nonce', 'nonce');
-        
+
         if (!current_user_can('manage_options')) {
             wp_die('Accesso negato');
         }
-        
-        $use_regex = isset($_POST['use_regex']) && $_POST['use_regex'] === '1';
-        // Per entrambe le modalità, evita conversioni HTML entities per preservare < e > nelle regex
-        // Questo è necessario per regex come (?<!<) o (?!>) e per ricerche letterali di < >
-        $search_text = trim(stripslashes($_POST['search_text']));
-        $replace_text = trim(stripslashes($_POST['replace_text']));
-        $database_table = sanitize_text_field($_POST['database_table']);
-        $meta_key = isset($_POST['meta_key']) ? sanitize_text_field($_POST['meta_key']) : '';
-        
+
+        $params = $this->parse_request_params();
+
+        if (empty($params['search_text'])) {
+            wp_send_json_error('Il pattern di ricerca non può essere vuoto');
+        }
+
         global $wpdb;
-        
-        // Validazione tabella
-        if (!$this->is_valid_table($database_table)) {
+
+        if (!$this->is_valid_table($params['database_table'])) {
             wp_send_json_error('Tabella database non valida');
         }
-        
+
+        if ($params['use_regex']) {
+            $regex_check = $this->validate_regex_pattern($params['search_text']);
+            if (is_wp_error($regex_check)) {
+                wp_send_json_error($regex_check->get_error_message());
+            }
+        }
+
         try {
-            // Determina la struttura della tabella
-            $table_structure = $this->get_table_structure($database_table);
+            $table_structure = $this->get_table_structure($params['database_table']);
             if (!$table_structure) {
                 wp_send_json_error('Impossibile determinare la struttura della tabella');
             }
-            
-            // Query dinamica basata sulla struttura della tabella
-            $sql = $this->build_search_query($database_table, $table_structure, $search_text, $meta_key, $use_regex);
-            $results = $wpdb->get_results($sql);
-            
-            $updated_records = 0;
-            $total_replacements = 0;
-            $details = array();
-            
+
+            $sql = $this->build_search_query(
+                $params['database_table'],
+                $table_structure,
+                $params['search_text'],
+                $params['meta_key'],
+                $params['use_regex'],
+                $params['batch_size'],
+                $params['offset']
+            );
+
+            if (is_wp_error($sql)) {
+                wp_send_json_error($sql->get_error_message());
+            }
+
+            $results             = $wpdb->get_results($sql);
+            $updated_records     = 0;
+            $total_replacements  = 0;
+            $details             = array();
+
             foreach ($results as $row) {
-                $serialized_field = $table_structure['serialized_field'];
-                $unserialized_data = @unserialize($row->{$serialized_field});
-                
+                $serialized_field  = $table_structure['serialized_field'];
+                $unserialized_data = $this->safe_unserialize($row->{$serialized_field});
+
                 if ($unserialized_data === false) {
                     continue;
                 }
-                
-                $original_data = $unserialized_data;
-                $replacements = $this->replace_in_data($unserialized_data, $search_text, $replace_text, $use_regex);
-                
+
+                $replacements = $this->replace_in_data(
+                    $unserialized_data,
+                    $params['search_text'],
+                    $params['replace_text'],
+                    $params['use_regex']
+                );
+
                 if ($replacements > 0) {
                     $new_serialized_data = serialize($unserialized_data);
-                    
+
                     $update_result = $wpdb->update(
-                        $database_table,
+                        $params['database_table'],
                         array($serialized_field => $new_serialized_data),
                         array($table_structure['primary_key'] => $row->{$table_structure['primary_key']}),
                         array('%s'),
                         array('%d')
                     );
-                    
+
                     if ($update_result !== false) {
                         $updated_records++;
                         $total_replacements += $replacements;
-                        
+
                         $detail_data = array(
-                            'primary_id' => $row->{$table_structure['primary_key']},
-                            'replacements' => $replacements
+                            'primary_id'   => $row->{$table_structure['primary_key']},
+                            'replacements' => $replacements,
                         );
-                        
-                        // Aggiungi campi specifici della tabella
+
                         foreach ($table_structure['display_fields'] as $field) {
                             if (isset($row->{$field})) {
                                 $detail_data[$field] = $row->{$field};
                             }
                         }
-                        
-                        // Aggiungi titolo post se disponibile
+
                         if (isset($row->post_id)) {
                             $detail_data['post_title'] = get_the_title($row->post_id);
                         }
-                        
+
                         $details[] = $detail_data;
                     }
                 }
             }
-            
+
+            $batch_size = $params['batch_size'];
+            $has_more   = count($results) === $batch_size;
+
             wp_send_json_success(array(
-                'updated_records' => $updated_records,
+                'updated_records'    => $updated_records,
                 'total_replacements' => $total_replacements,
-                'details' => $details
+                'details'            => $details,
+                'has_more'           => $has_more,
+                'next_offset'        => $params['offset'] + $batch_size,
             ));
-            
+
         } catch (Exception $e) {
             wp_send_json_error('Errore durante la sostituzione: ' . $e->getMessage());
         }
@@ -456,49 +493,129 @@ class SerializedSearchReplace {
     }
     
     /**
+     * Legge e normalizza i parametri comuni delle richieste AJAX.
+     */
+    private function parse_request_params() {
+        $batch_size = isset($_POST['batch_size']) ? (int) $_POST['batch_size'] : self::BATCH_SIZE;
+        $batch_size = max(1, min(self::BATCH_SIZE, $batch_size));
+
+        return array(
+            'use_regex'      => isset($_POST['use_regex']) && $_POST['use_regex'] === '1',
+            'search_text'    => trim(stripslashes($_POST['search_text'])),
+            'replace_text'   => trim(stripslashes($_POST['replace_text'])),
+            'database_table' => sanitize_text_field($_POST['database_table']),
+            'meta_key'       => isset($_POST['meta_key']) ? sanitize_text_field($_POST['meta_key']) : '',
+            'offset'         => isset($_POST['offset']) ? max(0, (int) $_POST['offset']) : 0,
+            'batch_size'     => $batch_size,
+        );
+    }
+
+    /**
+     * Deserializza in modo sicuro (nessuna istanziazione di oggetti PHP).
+     */
+    private function safe_unserialize($raw) {
+        if (!is_string($raw) || !is_serialized($raw)) {
+            return false;
+        }
+
+        return @unserialize(trim($raw), array('allowed_classes' => false));
+    }
+
+    /**
+     * Valida la sintassi di un pattern regex prima dell'uso.
+     */
+    private function validate_regex_pattern($pattern) {
+        if ($pattern === '') {
+            return new WP_Error('ssr_empty_regex', 'Il pattern regex non può essere vuoto.');
+        }
+
+        set_error_handler(static function () {}, E_WARNING);
+        $result = @preg_match('/' . str_replace('/', '\/', $pattern) . '/', '');
+        restore_error_handler();
+
+        if ($result === false) {
+            return new WP_Error('ssr_invalid_regex', 'Sintassi regex non valida.');
+        }
+
+        return true;
+    }
+
+    /**
+     * Esegue operazioni PCRE con limiti di backtrack/recursion ridotti.
+     */
+    private function run_pcre($callback) {
+        $prev_backtrack  = ini_get('pcre.backtrack_limit');
+        $prev_recursion  = ini_get('pcre.recursion_limit');
+
+        ini_set('pcre.backtrack_limit', (string) self::PCRE_BACKTRACK_LIMIT);
+        ini_set('pcre.recursion_limit', '10000');
+
+        try {
+            return $callback();
+        } finally {
+            ini_set('pcre.backtrack_limit', $prev_backtrack);
+            ini_set('pcre.recursion_limit', $prev_recursion);
+        }
+    }
+
+    /**
      * Conta le occorrenze in modo ricorsivo
      */
     private function count_occurrences_in_data($data, $search_text, $use_regex) {
         $count = 0;
-        
+
         if (is_array($data)) {
             foreach ($data as $value) {
                 $count += $this->count_occurrences_in_data($value, $search_text, $use_regex);
             }
         } elseif (is_string($data)) {
             if ($use_regex) {
-                $count = preg_match_all('/' . str_replace('/', '\/', $search_text) . '/', $data);
+                $count = $this->run_pcre(function () use ($search_text, $data) {
+                    $result = preg_match_all('/' . str_replace('/', '\/', $search_text) . '/', $data);
+                    return ($result === false) ? 0 : $result;
+                });
             } else {
                 $count = substr_count($data, $search_text);
             }
         }
-        
+
         return $count;
     }
-    
+
     /**
      * Sostituisce i dati in modo ricorsivo
      */
     private function replace_in_data(&$data, $search_text, $replace_text, $use_regex) {
         $replacements = 0;
-        
+
         if (is_array($data)) {
             foreach ($data as &$value) {
                 $replacements += $this->replace_in_data($value, $search_text, $replace_text, $use_regex);
             }
             unset($value);
         } elseif (is_string($data)) {
-            $original = $data;
-            
             if ($use_regex) {
-                $data = preg_replace('/' . str_replace('/', '\/', $search_text) . '/', $replace_text, $data, -1, $count);
-                $replacements = $count;
+                $count = 0;
+                $new_data = $this->run_pcre(function () use ($search_text, $replace_text, $data, &$count) {
+                    return preg_replace(
+                        '/' . str_replace('/', '\/', $search_text) . '/',
+                        $replace_text,
+                        $data,
+                        -1,
+                        $count
+                    );
+                });
+
+                if ($new_data !== null) {
+                    $data         = $new_data;
+                    $replacements = $count;
+                }
             } else {
                 $data = str_replace($search_text, $replace_text, $data, $count);
                 $replacements = $count;
             }
         }
-        
+
         return $replacements;
     }
     
@@ -628,75 +745,82 @@ class SerializedSearchReplace {
     /**
      * Costruisce la query di ricerca dinamica
      */
-    private function build_search_query($table_name, $table_structure, $search_text, $meta_key = '', $use_regex = false) {
+    private function build_search_query($table_name, $table_structure, $search_text, $meta_key = '', $use_regex = false, $limit = self::BATCH_SIZE, $offset = 0) {
         global $wpdb;
+
         $select_fields = array();
         $select_fields[] = $table_structure['primary_key'];
         $select_fields[] = $table_structure['serialized_field'];
         foreach ($table_structure['display_fields'] as $field) {
-            if (!in_array($field, $select_fields)) {
+            if (!in_array($field, $select_fields, true)) {
                 $select_fields[] = $field;
             }
         }
         $select_clause = implode(', ', $select_fields);
-        
+
         if ($use_regex) {
-            // Per regex, estrai la parte "core" del pattern per la ricerca SQL
             $core_pattern = $this->extract_core_pattern($search_text);
-            $search_escaped = str_replace(array("'", '"', "\\"), array("\\'", '\\"', "\\\\"), $core_pattern);
+            if ($core_pattern === null) {
+                if (empty($meta_key)) {
+                    return new WP_Error(
+                        'ssr_broad_pattern',
+                        'Pattern regex troppo generico per la scansione SQL: seleziona una meta_key o semplifica il pattern.'
+                    );
+                }
+                $core_pattern = $meta_key;
+            }
+            $like_pattern = '%' . $wpdb->esc_like($core_pattern) . '%';
         } else {
-            // Per ricerca letterale, usa il testo completo
-            $search_escaped = str_replace(array("'", '"', "\\"), array("\\'", '\\"', "\\\\"), $search_text);
+            $like_pattern = '%' . $wpdb->esc_like($search_text) . '%';
         }
-        
-        $like_pattern = '%' . $search_escaped . '%';
-        
+
+        $field = $table_structure['serialized_field'];
+        $pk    = $table_structure['primary_key'];
+
         $sql = "SELECT {$select_clause} FROM `{$table_name}` ";
-        $sql .= "WHERE `{$table_structure['serialized_field']}` LIKE '{$like_pattern}' ";
-        $sql .= "AND (`{$table_structure['serialized_field']}` LIKE 'a:%' ";
-        $sql .= "OR `{$table_structure['serialized_field']}` LIKE 'O:%' ";
-        $sql .= "OR `{$table_structure['serialized_field']}` LIKE 's:%') ";
-        
-        if (!empty($meta_key) && in_array('meta_key', $table_structure['display_fields'])) {
-            $meta_key_escaped = str_replace(array("'", '"', "\\"), array("\\'", '\\"', "\\\\"), $meta_key);
-            $sql .= "AND `meta_key` = '{$meta_key_escaped}' ";
+        $sql .= "WHERE `{$field}` LIKE %s ";
+        $sql .= "AND (`{$field}` LIKE 'a:%%' OR `{$field}` LIKE 'O:%%' OR `{$field}` LIKE 's:%%') ";
+
+        $prepare_args = array($like_pattern);
+
+        if (!empty($meta_key) && in_array('meta_key', $table_structure['display_fields'], true)) {
+            $sql .= "AND `meta_key` = %s ";
+            $prepare_args[] = $meta_key;
         }
-        
-        return $sql;
+
+        $sql .= "ORDER BY `{$pk}` ASC LIMIT %d OFFSET %d";
+        $prepare_args[] = (int) $limit;
+        $prepare_args[] = (int) $offset;
+
+        return $wpdb->prepare($sql, ...$prepare_args);
     }
-    
+
     /**
      * Estrae la parte "core" di un pattern regex per la ricerca SQL
+     *
+     * @return string|null Stringa utilizzabile per LIKE, oppure null se troppo generica.
      */
     private function extract_core_pattern($regex_pattern) {
-        // Rimuovi lookahead e lookbehind
         $core = preg_replace('/\(\?\<[!=].*?\)/', '', $regex_pattern);
         $core = preg_replace('/\(\?\![^)]*\)/', '', $core);
         $core = preg_replace('/\(\?\=[^)]*\)/', '', $core);
-        
-        // Rimuovi quantificatori
         $core = preg_replace('/[+*?{][^}]*}?/', '', $core);
-        
-        // Rimuovi caratteri speciali regex comuni
         $core = str_replace(array('^', '$', '\\b', '\\s', '\\d', '\\w'), '', $core);
-        
-        // Rimuovi parentesi di gruppi
         $core = preg_replace('/[()]/', '', $core);
-        
-        // Se rimane qualcosa di utile, usalo, altrimenti usa una stringa generica
         $core = trim($core);
-        if (empty($core) || strlen($core) < 2) {
-            // Se il pattern è troppo complesso, cerca almeno alcuni caratteri comuni
-            if (strpos($regex_pattern, 'strong') !== false) {
-                return 'strong';
-            } elseif (strpos($regex_pattern, 'br') !== false) {
-                return 'br';
-            } else {
-                return ''; // Cerca tutto se non riesci a estrarre un pattern utile
-            }
+
+        if ($core !== '' && strlen($core) >= 2) {
+            return $core;
         }
-        
-        return $core;
+
+        if (strpos($regex_pattern, 'strong') !== false) {
+            return 'strong';
+        }
+        if (strpos($regex_pattern, 'br') !== false) {
+            return 'br';
+        }
+
+        return null;
     }
 }
 
