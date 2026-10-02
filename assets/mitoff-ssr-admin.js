@@ -59,18 +59,26 @@ jQuery(document).ready(function($) {
             },
             success: function(response) {
                 if (response.success && response.data.meta_keys && response.data.meta_keys.length > 0) {
-                    let select = `<select id="meta_key" name="meta_key" class="regular-text"><option value="">-- Tutti --</option>`;
+                    const label = response.data.filter_label || 'Meta Key';
+                    let select = `<select id="meta_key" name="meta_key" class="regular-text" required><option value="">-- Seleziona --</option>`;
                     response.data.meta_keys.forEach(function(key) {
                         select += `<option value="${escapeHtml(key)}">${escapeHtml(key)}</option>`;
                     });
                     select += '</select>';
-                    $('#ssr-meta-key-row td').html(select + '<p class="description">Filtra per meta_key (opzionale)</p>');
+                    let description = 'Obbligatorio: limita la scansione a una sola chiave.';
+                    if (response.data.truncated) {
+                        description += ' Elenco limitato alle prime 5000.';
+                    }
+                    $('#ssr-meta-key-row th').text(label);
+                    $('#ssr-meta-key-row td').html(select + `<p class="description">${description}</p>`);
                 } else {
-                    $('#ssr-meta-key-row').remove();
+                    $('#ssr-meta-key-row th').text('Filtro');
+                    $('#ssr-meta-key-row td').html('<p class="description">Questa tabella non ha meta_key né option_name: la ricerca è disabilitata.</p>');
                 }
             },
             error: function() {
-                $('#ssr-meta-key-row').remove();
+                $('#ssr-meta-key-row th').text('Filtro');
+                $('#ssr-meta-key-row td').html('<p class="description">Impossibile caricare le chiavi. Ricarica la pagina.</p>');
             }
         });
     });
@@ -92,6 +100,11 @@ jQuery(document).ready(function($) {
         
         if (!searchText) {
             alert('Il pattern di ricerca è obbligatorio!');
+            return;
+        }
+
+        if (!metaKey) {
+            alert('Seleziona una meta_key o una option_name prima di cercare.');
             return;
         }
         
@@ -156,7 +169,7 @@ jQuery(document).ready(function($) {
                 replace_text: searchResults.replace_text,
                 use_regex: searchResults.use_regex ? '1' : '0',
                 database_table: searchResults.database_table,
-                meta_key: $('#meta_key').length ? $('#meta_key').val() : '',
+                meta_key: searchResults.scope_value || '',
                 nonce: ssr_ajax.nonce
             },
             success: function(response) {
@@ -198,6 +211,8 @@ jQuery(document).ready(function($) {
                 <p><strong>Pattern cercato:</strong> <code>${searchTextDisplay}</code></p>
                 <p><strong>Sostituirà con:</strong> <code>${replaceTextDisplay}</code></p>
                 <p><strong>Modalità regex:</strong> ${data.use_regex ? 'Sì' : 'No'}</p>
+                <p><strong>Chiave:</strong> <code>${escapeHtml(data.scope_value || '')}</code></p>
+                ${data.skipped_oversized ? `<p><strong>Valori oltre 512 KB ignorati:</strong> ${data.skipped_oversized}</p>` : ''}
                 <p><strong>Record trovati:</strong> ${data.total_records}</p>
                 <p><strong>Occorrenze totali:</strong> ${data.total_occurrences}</p>
                 ${data.debug_info ? `
@@ -295,6 +310,7 @@ jQuery(document).ready(function($) {
                 <h3>✅ Sostituzione completata!</h3>
                 <p><strong>Record aggiornati:</strong> ${data.updated_records}</p>
                 <p><strong>Sostituzioni totali:</strong> ${data.total_replacements}</p>
+                ${data.skipped_oversized ? `<p><strong>Valori oltre 512 KB ignorati:</strong> ${data.skipped_oversized}</p>` : ''}
             </div>
         `);
         

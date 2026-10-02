@@ -5,6 +5,16 @@ Tutte le modifiche significative a questo progetto saranno documentate in questo
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/),
 e questo progetto aderisce al [Semantic Versioning](https://semver.org/lang/it/).
 
+## [1.1.8] - 2026-10-02
+
+### Corretto
+- **Scansione SQL**: `meta_key` obbligatoria su postmeta, usermeta e termmeta; `option_name` obbligatoria sulle tabelle options. Senza filtro la richiesta è rifiutata
+- **Valori grandi**: le righe oltre 512 KB non vengono deserializzate (`CHAR_LENGTH` in SQL e controllo in PHP)
+- **Profondità**: il walk ricorsivo si ferma a 32 livelli
+- **Oggetti serializzati**: le righe con prefisso `O:` non entrano più nella query
+- **ReDoS**: la modalità regex è rifiutata se `ini_set` non applica i limiti PCRE; quantificatori annidati e probe di backtrack bloccano i pattern pericolosi
+- **Errori PCRE**: superamento di backtrack o recursion limit restituito come errore, insieme alle stringhe oltre 100 KB
+
 ## [1.1.7] - 2026-09-01
 
 ### Corretto

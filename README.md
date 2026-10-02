@@ -2,7 +2,7 @@
 
 Plugin WordPress per cercare e sostituire testo all'interno di dati **serializzati** in tabelle `*meta` e `*options`, con anteprima prima della scrittura.
 
-**Versione attuale:** 1.1.7
+**Versione attuale:** 1.1.8
 
 ## Caratteristiche
 
@@ -56,7 +56,7 @@ serialized-search-replace/
 1. Vai in **Salus → Search & Replace** (il menu **Salus** viene creato automaticamente se assente)
 2. Scegli un esempio dalla sezione integrata (opzionale)
 3. Seleziona la **tabella** database (default: `postmeta`)
-4. Filtra per **meta_key** se la tabella lo supporta (consigliato con pattern regex complessi)
+4. Seleziona una **meta_key** (obbligatoria). Sulle tabelle options seleziona una **option_name**
 5. Inserisci il **pattern di ricerca** (testo o regex, senza delimitatori `/`)
 6. Inserisci il **testo sostitutivo** (può essere vuoto)
 7. Clicca **Cerca** e verifica l'anteprima
@@ -79,17 +79,21 @@ Il plugin è pensato solo per admin con `manage_options`:
 - Whitelist tabelle (`*meta`, `*options`) con verifica su `information_schema`
 - Query SQL con `$wpdb->prepare()` e `$wpdb->esc_like()`
 - Deserializzazione con `allowed_classes => false` (nessuna istanziazione di oggetti PHP)
-- Validazione sintassi regex e limiti PCRE (`backtrack_limit`, `recursion_limit`)
-- Blocco scan SQL troppo ampia: pattern regex generici richiedono una `meta_key` o un filtro LIKE utilizzabile
-- Elaborazione batch lato server (200 righe per richiesta AJAX) per limitare il carico su tabelle grandi
+- Filtro obbligatorio su `meta_key` o `option_name`, così la query usa l'indice e non scorre l'intera tabella
+- Valori oltre 512 KB esclusi prima di `unserialize`; walk ricorsivo limitato a 32 livelli
+- Righe serializzate come oggetti (`O:`) escluse dalla query
+- Validazione regex: sintassi, rifiuto dei quantificatori annidati, probe anti-ReDoS
+- Limiti PCRE (`backtrack_limit`, `recursion_limit`) verificati via `ini_set`; se non applicabili la modalità regex è disattivata
+- Testo oltre 100 KB o superamento del backtrack restituiti come errore, non come «zero risultati»
+- Elaborazione batch lato server (200 righe per richiesta AJAX)
 
 > **Nota:** è uno strumento di manutenzione database. Un admin compromesso o un uso improprio possono danneggiare i dati del sito. Backup obbligatorio.
 
 ## Limitazioni note
 
-- Opera solo su valori **serializzati** (prefissi `a:`, `s:`, `O:` nel campo); stringhe plain non serializzate non vengono processate
-- I dati oggetto (`O:...`) vengono ignorati in lettura per sicurezza
-- Con pattern regex molto astratti, seleziona una `meta_key` per restringere la scansione SQL
+- Opera solo su valori **serializzati** come array o stringa (prefissi `a:` e `s:`). Le righe oggetto (`O:`) e i valori oltre 512 KB sono esclusi
+- `meta_key` o `option_name` è obbligatoria: non è possibile cercare su tutta la tabella
+- Un pattern con quantificatori annidati, come `(a+)+`, viene rifiutato
 - La paginazione batch è attiva lato server; l'interfaccia JS elabora ancora una richiesta per operazione (estensione multi-batch in roadmap)
 
 ## Risoluzione problemi
@@ -98,10 +102,16 @@ Il plugin è pensato solo per admin con `manage_options`:
 Verifica permessi amministratore, plugin attivo e assenza di errori PHP nei log.
 
 **Nessun risultato con regex complessa**  
-Prova a selezionare una `meta_key` specifica o semplifica il pattern.
+Verifica la chiave selezionata e semplifica il pattern.
 
-**Errore «Pattern regex troppo generico»**  
-Il filtro SQL non può restringere la ricerca: aggiungi una `meta_key` o usa un pattern con testo letterale riconoscibile.
+**Errore «Seleziona una meta_key»**  
+La scansione parte solo dopo aver scelto una meta_key o, sulle options, una option_name.
+
+**Errore su quantificatori annidati o limite PCRE**  
+Il pattern è stato rifiutato come possibile ReDoS. Usa un pattern più semplice oppure la ricerca letterale.
+
+**Valori oltre 512 KB ignorati**  
+Quei record restano invariati. Vanno corretti con un altro strumento se superano il tetto.
 
 **Regex non applicata**  
 Controlla che «Usa espressione regolare» sia attivo e che il pattern **non** includa i delimitatori `/`.

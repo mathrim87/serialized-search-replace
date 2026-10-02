@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Serialized Search & Replace
  * Description: Plugin per cercare e sostituire testo in dati serializzati nella tabella postmeta
- * Version: 1.1.7
+ * Version: 1.1.8
  * Author: mitoff
  * Text Domain: serialized-search-replace
  * Domain Path: /languages
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('SSR_VERSION', '1.1.7');
+define('SSR_VERSION', '1.1.8');
 define('SSR_PLUGIN_FILE', __FILE__);
 define('SSR_PLUGIN_DIR', plugin_dir_path(__FILE__));
 
@@ -28,6 +28,17 @@ class SerializedSearchReplace {
 
     const BATCH_SIZE = 200;
     const PCRE_BACKTRACK_LIMIT = 100000;
+    const PCRE_RECURSION_LIMIT = 10000;
+    const REDOS_PROBE_BACKTRACK_LIMIT = 10000;
+    const REDOS_PROBE_RECURSION_LIMIT = 1000;
+    const REDOS_PROBE_LENGTH = 4096;
+    const MAX_SERIALIZED_BYTES = 524288;
+    const MAX_REGEX_SUBJECT_BYTES = 102400;
+    const MAX_WALK_DEPTH = 32;
+    const MAX_PATTERN_LENGTH = 1000;
+    const MAX_SCOPE_VALUES = 5000;
+
+    private $skipped_oversized = 0;
     
     public function __construct() {
         add_action('admin_menu', array($this, 'add_admin_menu'), 99);
@@ -97,7 +108,7 @@ class SerializedSearchReplace {
             </h1>
             <div class="ssr-container">
                 <div class="ssr-warning">
-                    <p><strong>⚠️ ATTENZIONE:</strong> Fai sempre un backup del database prima di procedere con le sostituzioni!</p>
+                    <p><strong>⚠️ ATTENZIONE:</strong> Fai sempre un backup del database prima di procedere con le sostituzioni! La ricerca richiede una meta_key, oppure una option_name sulle tabelle options.</p>
                 </div>
                 
                 <!-- Sezione Esempi -->
@@ -163,7 +174,7 @@ class SerializedSearchReplace {
                             <th scope="row">Meta Key:</th>
                             <td>
                                 <span id="ssr-meta-key-loading">Caricamento...</span>
-                                <p class="description">Filtra per meta_key (opzionale, solo se disponibile per la tabella selezionata)</p>
+                                <p class="description">Obbligatorio: limita la scansione a una sola meta_key o option_name</p>
                             </td>
                         </tr>
                         <tr>
@@ -259,6 +270,8 @@ class SerializedSearchReplace {
         }
 
         try {
+            $this->skipped_oversized = 0;
+
             $table_structure = $this->get_table_structure($params['database_table']);
             if (!$table_structure) {
                 wp_send_json_error('Impossibile determinare la struttura della tabella');
@@ -336,9 +349,11 @@ class SerializedSearchReplace {
                 'search_text'       => $params['search_text'],
                 'replace_text'      => $params['replace_text'],
                 'use_regex'         => $params['use_regex'],
-                'database_table'    => $params['database_table'],
-                'table_structure'   => $table_structure,
-                'debug_info'        => $debug_info,
+                'database_table'     => $params['database_table'],
+                'scope_value'        => $params['meta_key'],
+                'skipped_oversized'  => $this->skipped_oversized,
+                'table_structure'    => $table_structure,
+                'debug_info'         => $debug_info,
             ));
 
         } catch (Exception $e) {
@@ -376,6 +391,8 @@ class SerializedSearchReplace {
         }
 
         try {
+            $this->skipped_oversized = 0;
+
             $table_structure = $this->get_table_structure($params['database_table']);
             if (!$table_structure) {
                 wp_send_json_error('Impossibile determinare la struttura della tabella');
@@ -459,6 +476,7 @@ class SerializedSearchReplace {
                 'details'            => $details,
                 'has_more'           => $has_more,
                 'next_offset'        => $params['offset'] + $batch_size,
+                'skipped_oversized'  => $this->skipped_oversized,
             ));
 
         } catch (Exception $e) {
@@ -474,22 +492,43 @@ class SerializedSearchReplace {
         if (!current_user_can('manage_options')) {
             wp_die('Accesso negato');
         }
-        $database_table = sanitize_text_field($_POST['database_table']);
+        $database_table = isset($_POST['database_table']) ? sanitize_text_field(wp_unslash($_POST['database_table'])) : '';
         global $wpdb;
         if (!$this->is_valid_table($database_table)) {
             wp_send_json_error('Tabella database non valida');
         }
-        // Cerca se esiste il campo meta_key
         $columns = $wpdb->get_col($wpdb->prepare(
             "SELECT COLUMN_NAME FROM information_schema.columns WHERE table_schema = %s AND table_name = %s",
             DB_NAME,
             $database_table
         ));
-        if (!in_array('meta_key', $columns)) {
-            wp_send_json_success(array('meta_keys' => array()));
+        $scope = null;
+        $label = '';
+        if (in_array('meta_key', $columns, true)) {
+            $scope = 'meta_key';
+            $label = 'Meta Key';
+        } elseif (in_array('option_name', $columns, true)) {
+            $scope = 'option_name';
+            $label = 'Option name';
         }
-        $meta_keys = $wpdb->get_col("SELECT DISTINCT meta_key FROM `$database_table` ORDER BY meta_key ASC");
-        wp_send_json_success(array('meta_keys' => $meta_keys));
+        if ($scope === null) {
+            wp_send_json_success(array(
+                'meta_keys'    => array(),
+                'filter_field' => '',
+                'filter_label' => '',
+                'truncated'    => false,
+            ));
+        }
+        $limit = (int) self::MAX_SCOPE_VALUES;
+        $meta_keys = $wpdb->get_col(
+            "SELECT DISTINCT `{$scope}` FROM `{$database_table}` WHERE `{$scope}` <> '' ORDER BY `{$scope}` ASC LIMIT {$limit}"
+        );
+        wp_send_json_success(array(
+            'meta_keys'    => $meta_keys,
+            'filter_field' => $scope,
+            'filter_label' => $label,
+            'truncated'    => count($meta_keys) >= $limit,
+        ));
     }
     
     /**
@@ -512,66 +551,328 @@ class SerializedSearchReplace {
 
     /**
      * Deserializza in modo sicuro (nessuna istanziazione di oggetti PHP).
+     * I valori oltre il tetto di byte vengono ignorati.
      */
     private function safe_unserialize($raw) {
-        if (!is_string($raw) || !is_serialized($raw)) {
+        if (!is_string($raw)) {
             return false;
         }
 
-        return @unserialize(trim($raw), array('allowed_classes' => false));
+        if (strlen($raw) > self::MAX_SERIALIZED_BYTES) {
+            $this->skipped_oversized++;
+            return false;
+        }
+
+        if (!is_serialized($raw)) {
+            return false;
+        }
+
+        $value = @unserialize(trim($raw), array('allowed_classes' => false));
+        if (!is_array($value) && !is_string($value)) {
+            return false;
+        }
+
+        return $value;
     }
 
     /**
-     * Valida la sintassi di un pattern regex prima dell'uso.
+     * Valida sintassi, quantificatori annidati e comportamento su una stringa di prova.
      */
     private function validate_regex_pattern($pattern) {
         if ($pattern === '') {
             return new WP_Error('ssr_empty_regex', 'Il pattern regex non può essere vuoto.');
         }
 
-        set_error_handler(static function () {}, E_WARNING);
-        $result = @preg_match('/' . str_replace('/', '\/', $pattern) . '/', '');
-        restore_error_handler();
+        if (strlen($pattern) > self::MAX_PATTERN_LENGTH) {
+            return new WP_Error('ssr_long_regex', 'Il pattern regex supera i 1000 caratteri.');
+        }
 
-        if ($result === false) {
+        if (!$this->can_enforce_pcre_limits()) {
+            return new WP_Error(
+                'ssr_pcre_limits',
+                'Modalità regex non disponibile: il server non consente di limitare PCRE. Disattiva l\'espressione regolare e usa la ricerca letterale.'
+            );
+        }
+
+        if ($this->has_nested_quantifiers($pattern)) {
+            return new WP_Error(
+                'ssr_nested_quantifier',
+                'Pattern regex rifiutato: contiene quantificatori annidati, a rischio ReDoS.'
+            );
+        }
+
+        $syntax = $this->run_pcre(function () use ($pattern) {
+            set_error_handler(static function () {}, E_WARNING);
+            $result = @preg_match($this->delimit_pattern($pattern), '');
+            restore_error_handler();
+            return $result;
+        });
+
+        if ($syntax === false) {
             return new WP_Error('ssr_invalid_regex', 'Sintassi regex non valida.');
+        }
+
+        if ($this->regex_probe_hits_limit($pattern)) {
+            return new WP_Error(
+                'ssr_redos',
+                'Pattern regex rifiutato: il controllo anti-ReDoS ha superato il limite di backtrack.'
+            );
         }
 
         return true;
     }
 
     /**
-     * Esegue operazioni PCRE con limiti di backtrack/recursion ridotti.
+     * True se ini_set applica un backtrack/recursion limit non superiore alle soglie del plugin.
      */
-    private function run_pcre($callback) {
-        $prev_backtrack  = ini_get('pcre.backtrack_limit');
-        $prev_recursion  = ini_get('pcre.recursion_limit');
-
-        ini_set('pcre.backtrack_limit', (string) self::PCRE_BACKTRACK_LIMIT);
-        ini_set('pcre.recursion_limit', '10000');
-
+    private function can_enforce_pcre_limits() {
         try {
-            return $callback();
-        } finally {
-            ini_set('pcre.backtrack_limit', $prev_backtrack);
-            ini_set('pcre.recursion_limit', $prev_recursion);
+            $this->run_pcre(static function () {
+                return true;
+            });
+            return true;
+        } catch (RuntimeException $e) {
+            return false;
         }
     }
 
     /**
-     * Conta le occorrenze in modo ricorsivo
+     * Esegue operazioni PCRE con limiti di backtrack/recursion ridotti.
+     * Se ini_set non applica il tetto richiesto, interrompe la modalità regex.
      */
-    private function count_occurrences_in_data($data, $search_text, $use_regex) {
+    private function run_pcre($callback, $backtrack_limit = null, $recursion_limit = null) {
+        $backtrack_limit = $backtrack_limit === null ? self::PCRE_BACKTRACK_LIMIT : (int) $backtrack_limit;
+        $recursion_limit = $recursion_limit === null ? self::PCRE_RECURSION_LIMIT : (int) $recursion_limit;
+
+        $prev_backtrack = ini_get('pcre.backtrack_limit');
+        $prev_recursion = ini_get('pcre.recursion_limit');
+
+        @ini_set('pcre.backtrack_limit', (string) $backtrack_limit);
+        @ini_set('pcre.recursion_limit', (string) $recursion_limit);
+
+        $applied_backtrack = (int) ini_get('pcre.backtrack_limit');
+        $applied_recursion = (int) ini_get('pcre.recursion_limit');
+        $enforced = $applied_backtrack > 0
+            && $applied_backtrack <= $backtrack_limit
+            && $applied_recursion > 0
+            && $applied_recursion <= $recursion_limit;
+
+        if (!$enforced) {
+            @ini_set('pcre.backtrack_limit', (string) $prev_backtrack);
+            @ini_set('pcre.recursion_limit', (string) $prev_recursion);
+            throw new RuntimeException(
+                'Modalità regex non disponibile: il server non consente di limitare PCRE. Usa la ricerca letterale.'
+            );
+        }
+
+        try {
+            return $callback();
+        } finally {
+            @ini_set('pcre.backtrack_limit', (string) $prev_backtrack);
+            @ini_set('pcre.recursion_limit', (string) $prev_recursion);
+        }
+    }
+
+    /**
+     * Delimita un pattern utente per PCRE.
+     */
+    private function delimit_pattern($pattern) {
+        return '/' . str_replace('/', '\/', $pattern) . '/';
+    }
+
+    /**
+     * Rifiuta i gruppi che contengono un quantificatore e sono a loro volta quantificati, come (a+)+.
+     */
+    private function has_nested_quantifiers($pattern) {
+        $stripped = $this->strip_character_classes($pattern);
+        $length = strlen($stripped);
+        $depth = 0;
+        $quantifier_at_depth = array();
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = $stripped[$i];
+            if ($char === '\\' && $i + 1 < $length) {
+                $i++;
+                continue;
+            }
+            if ($char === '(') {
+                $depth++;
+                $quantifier_at_depth[$depth] = false;
+                continue;
+            }
+            if ($char === ')' && $depth > 0) {
+                $inner = !empty($quantifier_at_depth[$depth]);
+                unset($quantifier_at_depth[$depth]);
+                $depth--;
+                $next = ($i + 1 < $length) ? $stripped[$i + 1] : '';
+                if ($inner && ($next === '*' || $next === '+' || $next === '{')) {
+                    return true;
+                }
+                continue;
+            }
+            if ($depth > 0 && ($char === '*' || $char === '+' || $char === '{')) {
+                $quantifier_at_depth[$depth] = true;
+                continue;
+            }
+            if ($depth > 0 && $char === '?' && $i > 0 && $stripped[$i - 1] !== '(') {
+                $quantifier_at_depth[$depth] = true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Sostituisce le classi di caratteri con un letterale, così i quantificatori al loro interno non sembrano annidati.
+     */
+    private function strip_character_classes($pattern) {
+        $out = '';
+        $length = strlen($pattern);
+
+        for ($i = 0; $i < $length; $i++) {
+            if ($pattern[$i] === '\\' && $i + 1 < $length) {
+                $out .= $pattern[$i] . $pattern[$i + 1];
+                $i++;
+                continue;
+            }
+            if ($pattern[$i] !== '[') {
+                $out .= $pattern[$i];
+                continue;
+            }
+
+            $i++;
+            if ($i < $length && $pattern[$i] === '^') {
+                $i++;
+            }
+            if ($i < $length && $pattern[$i] === ']') {
+                $i++;
+            }
+            while ($i < $length && $pattern[$i] !== ']') {
+                if ($pattern[$i] === '\\' && $i + 1 < $length) {
+                    $i += 2;
+                    continue;
+                }
+                $i++;
+            }
+            $out .= 'a';
+        }
+
+        return $out;
+    }
+
+    /**
+     * Esegue il pattern su stringhe di prova corte. Un superamento del backtrack indica un ReDoS.
+     */
+    private function regex_probe_hits_limit($pattern) {
+        $delimited = $this->delimit_pattern($pattern);
+        $filler = str_repeat('a', self::REDOS_PROBE_LENGTH);
+        $probes = array(
+            $filler,
+            $filler . '!',
+        );
+        $seed = $this->extract_probe_seed($pattern);
+        if ($seed !== '') {
+            $probes[] = $seed . $filler;
+            $probes[] = $seed . $filler . '!';
+        }
+
+        foreach ($probes as $probe) {
+            $hit = $this->run_pcre(function () use ($delimited, $probe) {
+                set_error_handler(static function () {}, E_WARNING);
+                @preg_match($delimited, $probe);
+                restore_error_handler();
+                $error = preg_last_error();
+                return $error === PREG_BACKTRACK_LIMIT_ERROR || $error === PREG_RECURSION_LIMIT_ERROR;
+            }, self::REDOS_PROBE_BACKTRACK_LIMIT, self::REDOS_PROBE_RECURSION_LIMIT);
+
+            if ($hit) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Primo tratto letterale del pattern, usato come prefisso della stringa di prova.
+     */
+    private function extract_probe_seed($pattern) {
+        $stripped = $this->strip_character_classes($pattern);
+        $length = strlen($stripped);
+        $current = '';
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = $stripped[$i];
+            if ($char === '\\' && $i + 1 < $length) {
+                $next = $stripped[$i + 1];
+                $shorthand = in_array($next, array('d', 'D', 'w', 'W', 's', 'S', 'b', 'B'), true);
+                if (!$shorthand && preg_match('/^[A-Za-z0-9]$/', $next)) {
+                    $current .= $next;
+                } else {
+                    if (strlen($current) >= 2) {
+                        return substr($current, 0, 40);
+                    }
+                    $current = '';
+                }
+                $i++;
+                continue;
+            }
+            if (preg_match('/^[A-Za-z0-9 .\/:_-]$/', $char)) {
+                $current .= $char;
+                if (strlen($current) >= 40) {
+                    return substr(trim($current), 0, 40);
+                }
+                continue;
+            }
+            if (strlen(trim($current)) >= 2) {
+                return substr(trim($current), 0, 40);
+            }
+            $current = '';
+        }
+
+        $current = trim($current);
+        return strlen($current) >= 2 ? substr($current, 0, 40) : '';
+    }
+
+    /**
+     * Interrompe la richiesta se il testo è troppo lungo per una regex.
+     */
+    private function assert_regex_subject($data) {
+        if (strlen($data) > self::MAX_REGEX_SUBJECT_BYTES) {
+            throw new RuntimeException('Un valore supera il limite di 100 KB per la ricerca regex. Restringi la chiave selezionata o disattiva la regex.');
+        }
+    }
+
+    /**
+     * Interrompe la richiesta se PCRE ha raggiunto backtrack o recursion limit.
+     */
+    private function assert_pcre_within_limits() {
+        $error = preg_last_error();
+        if ($error === PREG_BACKTRACK_LIMIT_ERROR || $error === PREG_RECURSION_LIMIT_ERROR) {
+            throw new RuntimeException('Il pattern regex supera i limiti PCRE. Semplifica il pattern.');
+        }
+    }
+
+    /**
+     * Conta le occorrenze in modo ricorsivo, con tetto di profondità.
+     */
+    private function count_occurrences_in_data($data, $search_text, $use_regex, $depth = 0) {
+        if ($depth > self::MAX_WALK_DEPTH) {
+            return 0;
+        }
+
         $count = 0;
 
         if (is_array($data)) {
             foreach ($data as $value) {
-                $count += $this->count_occurrences_in_data($value, $search_text, $use_regex);
+                $count += $this->count_occurrences_in_data($value, $search_text, $use_regex, $depth + 1);
             }
         } elseif (is_string($data)) {
             if ($use_regex) {
+                $this->assert_regex_subject($data);
                 $count = $this->run_pcre(function () use ($search_text, $data) {
-                    $result = preg_match_all('/' . str_replace('/', '\/', $search_text) . '/', $data);
+                    $result = preg_match_all($this->delimit_pattern($search_text), $data);
+                    $this->assert_pcre_within_limits();
                     return ($result === false) ? 0 : $result;
                 });
             } else {
@@ -583,31 +884,38 @@ class SerializedSearchReplace {
     }
 
     /**
-     * Sostituisce i dati in modo ricorsivo
+     * Sostituisce i dati in modo ricorsivo, con tetto di profondità.
      */
-    private function replace_in_data(&$data, $search_text, $replace_text, $use_regex) {
+    private function replace_in_data(&$data, $search_text, $replace_text, $use_regex, $depth = 0) {
+        if ($depth > self::MAX_WALK_DEPTH) {
+            return 0;
+        }
+
         $replacements = 0;
 
         if (is_array($data)) {
             foreach ($data as &$value) {
-                $replacements += $this->replace_in_data($value, $search_text, $replace_text, $use_regex);
+                $replacements += $this->replace_in_data($value, $search_text, $replace_text, $use_regex, $depth + 1);
             }
             unset($value);
         } elseif (is_string($data)) {
             if ($use_regex) {
+                $this->assert_regex_subject($data);
                 $count = 0;
                 $new_data = $this->run_pcre(function () use ($search_text, $replace_text, $data, &$count) {
-                    return preg_replace(
-                        '/' . str_replace('/', '\/', $search_text) . '/',
+                    $replaced = preg_replace(
+                        $this->delimit_pattern($search_text),
                         $replace_text,
                         $data,
                         -1,
                         $count
                     );
+                    $this->assert_pcre_within_limits();
+                    return $replaced;
                 });
 
                 if ($new_data !== null) {
-                    $data         = $new_data;
+                    $data = $new_data;
                     $replacements = $count;
                 }
             } else {
@@ -624,6 +932,10 @@ class SerializedSearchReplace {
      */
     private function is_valid_table($table_name) {
         global $wpdb;
+
+        if (!$this->is_safe_identifier($table_name)) {
+            return false;
+        }
         
         // Lista delle tabelle consentite (solo quelle con possibili dati serializzati)
         $allowed_patterns = array('meta', 'options', 'postmeta', 'usermeta', 'termmeta');
@@ -704,7 +1016,7 @@ class SerializedSearchReplace {
                 }
                 
                 if ($valid_structure) {
-                    return $structure;
+                    return $this->with_scope_column($structure, $column_names);
                 }
             }
         }
@@ -731,12 +1043,12 @@ class SerializedSearchReplace {
         }
         
         if ($primary_key && $serialized_field) {
-            return array(
+            return $this->with_scope_column(array(
                 'primary_key' => $primary_key,
                 'serialized_field' => $serialized_field,
                 'display_fields' => array_slice($column_names, 0, 4), // Prime 4 colonne
                 'search_fields' => array($serialized_field)
-            );
+            ), $column_names);
         }
         
         return false;
@@ -748,51 +1060,84 @@ class SerializedSearchReplace {
     private function build_search_query($table_name, $table_structure, $search_text, $meta_key = '', $use_regex = false, $limit = self::BATCH_SIZE, $offset = 0) {
         global $wpdb;
 
-        $select_fields = array();
-        $select_fields[] = $table_structure['primary_key'];
-        $select_fields[] = $table_structure['serialized_field'];
-        foreach ($table_structure['display_fields'] as $field) {
-            if (!in_array($field, $select_fields, true)) {
-                $select_fields[] = $field;
+        if (!$this->is_safe_identifier($table_name)) {
+            return new WP_Error('ssr_bad_identifier', 'Nome tabella non valido.');
+        }
+
+        $scope_column = isset($table_structure['scope_column']) ? $table_structure['scope_column'] : null;
+        if (!$this->is_safe_identifier($scope_column)) {
+            return new WP_Error(
+                'ssr_no_scope',
+                'Questa tabella non ha meta_key né option_name: la scansione è disabilitata.'
+            );
+        }
+        if ($meta_key === '') {
+            $label = $scope_column === 'option_name' ? 'option_name' : 'meta_key';
+            return new WP_Error(
+                'ssr_scope_required',
+                'Seleziona una ' . $label . ' prima di avviare la ricerca.'
+            );
+        }
+
+        $field = $table_structure['serialized_field'];
+        $pk = $table_structure['primary_key'];
+        $columns = array($pk, $field);
+        foreach ($table_structure['display_fields'] as $display_field) {
+            if (!in_array($display_field, $columns, true)) {
+                $columns[] = $display_field;
             }
         }
-        $select_clause = implode(', ', $select_fields);
+        foreach (array_merge($columns, array($scope_column)) as $column) {
+            if (!$this->is_safe_identifier($column)) {
+                return new WP_Error('ssr_bad_identifier', 'Nome colonna non valido.');
+            }
+        }
 
         if ($use_regex) {
             $core_pattern = $this->extract_core_pattern($search_text);
-            if ($core_pattern === null) {
-                if (empty($meta_key)) {
-                    return new WP_Error(
-                        'ssr_broad_pattern',
-                        'Pattern regex troppo generico per la scansione SQL: seleziona una meta_key o semplifica il pattern.'
-                    );
-                }
-                $core_pattern = $meta_key;
-            }
-            $like_pattern = '%' . $wpdb->esc_like($core_pattern) . '%';
+            $like_pattern = ($core_pattern === null) ? '%' : '%' . $wpdb->esc_like($core_pattern) . '%';
         } else {
             $like_pattern = '%' . $wpdb->esc_like($search_text) . '%';
         }
 
-        $field = $table_structure['serialized_field'];
-        $pk    = $table_structure['primary_key'];
+        $select_clause = '`' . implode('`, `', $columns) . '`';
+        $sql  = "SELECT {$select_clause} FROM `{$table_name}` ";
+        $sql .= "WHERE `{$scope_column}` = %s ";
+        $sql .= "AND CHAR_LENGTH(`{$field}`) <= %d ";
+        $sql .= "AND `{$field}` LIKE %s ";
+        $sql .= "AND (`{$field}` LIKE 'a:%%' OR `{$field}` LIKE 's:%%') ";
+        $sql .= "ORDER BY `{$pk}` ASC LIMIT %d OFFSET %d";
 
-        $sql = "SELECT {$select_clause} FROM `{$table_name}` ";
-        $sql .= "WHERE `{$field}` LIKE %s ";
-        $sql .= "AND (`{$field}` LIKE 'a:%%' OR `{$field}` LIKE 'O:%%' OR `{$field}` LIKE 's:%%') ";
+        return $wpdb->prepare(
+            $sql,
+            $meta_key,
+            self::MAX_SERIALIZED_BYTES,
+            $like_pattern,
+            (int) $limit,
+            (int) $offset
+        );
+    }
 
-        $prepare_args = array($like_pattern);
-
-        if (!empty($meta_key) && in_array('meta_key', $table_structure['display_fields'], true)) {
-            $sql .= "AND `meta_key` = %s ";
-            $prepare_args[] = $meta_key;
+    /**
+     * Aggiunge la colonna indice obbligatoria (meta_key oppure option_name).
+     */
+    private function with_scope_column($structure, $column_names) {
+        if (in_array('meta_key', $column_names, true)) {
+            $structure['scope_column'] = 'meta_key';
+        } elseif (in_array('option_name', $column_names, true)) {
+            $structure['scope_column'] = 'option_name';
+        } else {
+            $structure['scope_column'] = null;
         }
 
-        $sql .= "ORDER BY `{$pk}` ASC LIMIT %d OFFSET %d";
-        $prepare_args[] = (int) $limit;
-        $prepare_args[] = (int) $offset;
+        return $structure;
+    }
 
-        return $wpdb->prepare($sql, ...$prepare_args);
+    /**
+     * Accetta solo identificatori SQL composti da lettere, cifre e underscore.
+     */
+    private function is_safe_identifier($name) {
+        return is_string($name) && preg_match('/^[A-Za-z0-9_]+$/', $name) === 1;
     }
 
     /**
@@ -801,13 +1146,17 @@ class SerializedSearchReplace {
      * @return string|null Stringa utilizzabile per LIKE, oppure null se troppo generica.
      */
     private function extract_core_pattern($regex_pattern) {
-        $core = preg_replace('/\(\?\<[!=].*?\)/', '', $regex_pattern);
-        $core = preg_replace('/\(\?\![^)]*\)/', '', $core);
-        $core = preg_replace('/\(\?\=[^)]*\)/', '', $core);
-        $core = preg_replace('/[+*?{][^}]*}?/', '', $core);
-        $core = str_replace(array('^', '$', '\\b', '\\s', '\\d', '\\w'), '', $core);
-        $core = preg_replace('/[()]/', '', $core);
-        $core = trim($core);
+        $core = $this->run_pcre(function () use ($regex_pattern) {
+            $value = preg_replace('/\(\?\<[!=].*?\)/', '', $regex_pattern);
+            $value = preg_replace('/\(\?\![^)]*\)/', '', $value);
+            $value = preg_replace('/\(\?\=[^)]*\)/', '', $value);
+            $value = preg_replace('/[+*?{][^}]*}?/', '', $value);
+            $value = str_replace(array('^', '$', '\\b', '\\s', '\\d', '\\w'), '', $value);
+            $value = preg_replace('/[()]/', '', $value);
+            $this->assert_pcre_within_limits();
+            return $value;
+        });
+        $core = trim((string) $core);
 
         if ($core !== '' && strlen($core) >= 2) {
             return $core;

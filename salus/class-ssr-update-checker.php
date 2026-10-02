@@ -8,8 +8,6 @@
  * Richiede la libreria PUC in salus/plugin-update-checker/
  * Scarica da: https://github.com/YahnisElsts/plugin-update-checker/releases
  *
- * Per repo privato: definisci GITHUB_TOKEN in wp-config.php (condiviso tra i plugin)
- *
  * @package Serialized_Search_Replace
  */
 
@@ -42,13 +40,11 @@ class SSR_Update_Checker {
 			'serialized-search-replace'
 		);
 
-		// Usa le Release di GitHub (ZIP allegato dal workflow auto-release)
 		$checker->getVcsApi()->enableReleaseAssets();
 
 		require_once __DIR__ . '/salus-puc-manual-check.php';
 		Salus_Puc_Manual_Check::add_update_now_link( 'serialized-search-replace', SSR_PLUGIN_FILE );
 
-		// Per repo privato: definisci GITHUB_TOKEN in wp-config.php (condiviso tra i plugin)
 		if ( defined( 'GITHUB_TOKEN' ) && GITHUB_TOKEN ) {
 			$checker->setAuthentication( GITHUB_TOKEN );
 		}
